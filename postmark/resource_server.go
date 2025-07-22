@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io/ioutil"
 	"net/http"
 	"strconv"
@@ -187,21 +188,53 @@ func resourceServerDelete(ctx context.Context, d *schema.ResourceData, m interfa
 
 	serverId := d.Id()
 	req, err := http.NewRequest("DELETE", "https://api.postmarkapp.com/servers/"+serverId, nil)
-	req.Header.Add("Accept", "application/json")
-	req.Header.Add("Content-Type", "application/json")
-	req.Header.Add("X-Postmark-Account-Token", c.AccountToken)
 	if err != nil {
 		return diag.FromErr(err)
 	}
+	
+	req.Header.Add("Accept", "application/json")
+	req.Header.Add("Content-Type", "application/json")
+	req.Header.Add("X-Postmark-Account-Token", c.AccountToken)
+	
 	res, err := client.Do(req)
 	if err != nil {
 		return diag.FromErr(err)
 	}
 	defer res.Body.Close()
 
-	if err != nil {
-		return diag.FromErr(err)
+	// Check HTTP status code
+	if res.StatusCode != http.StatusOK {
+		// Parse error response
+		var errorResponse map[string]interface{}
+		if decodeErr := json.NewDecoder(res.Body).Decode(&errorResponse); decodeErr == nil {
+			if message, ok := errorResponse["Message"].(string); ok {
+				if res.StatusCode == http.StatusForbidden {
+					diags = append(diags, diag.Diagnostic{
+						Severity: diag.Error,
+						Summary:  "Server deletion not permitted",
+						Detail:   fmt.Sprintf("Postmark server deletion failed: %s. Note: Server deletion is not enabled for all accounts. Please contact Postmark support to enable this feature.", message),
+					})
+				} else {
+					diags = append(diags, diag.Diagnostic{
+						Severity: diag.Error,
+						Summary:  "Failed to delete Postmark server",
+						Detail:   fmt.Sprintf("API returned status %d: %s", res.StatusCode, message),
+					})
+				}
+				return diags
+			}
+		}
+		
+		// Generic error if we can't parse the response
+		diags = append(diags, diag.Diagnostic{
+			Severity: diag.Error,
+			Summary:  "Failed to delete Postmark server",
+			Detail:   fmt.Sprintf("API returned status code %d", res.StatusCode),
+		})
+		return diags
 	}
+
+	// Server successfully deleted
 	d.SetId("")
 	return diags
 }
